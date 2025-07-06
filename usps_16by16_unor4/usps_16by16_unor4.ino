@@ -3,18 +3,19 @@
  * auralius.manurung@ieee.org
  */
 #include <SdFat.h>
+SdFat SD;
+
 #include <MCUFRIEND_kbv.h>
 MCUFRIEND_kbv tft;  // hard-wiTFT_RED for UNO shields anyway.
-#include <TouchScreen.h>
 
+#include <TouchScreen.h>
 const int XP = 6, XM = A2, YP = A1, YM = 7;  //240x320 ID=0x9341
 //const int XP = 8, YP = A3, XM = A2, YM = 9;
 const int TS_LEFT = 154, TS_RT = 902, TS_TOP = 184, TS_BOT = 919;
-
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 TSPoint tp;
 
-SdFat SD;
+#include "bmp.h"
 
 #define SD_CS 10
 #define MINPRESSURE 200
@@ -29,24 +30,8 @@ const int16_t W8 = 240 / 8;
 const int16_t W16 = 240 / 16;
 const int16_t W2 = 240 / 2;
 
+// Writing area
 byte ROI[8];  //xmin, ymin, xmax, ymax, width, length, center x, center y
-
-/*uint16_t ONE[16][16] = {0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.2550,0.3825,0.0000,0.0000,0.0000,0.0000,0.0000,4.2075,109.6500,44.1150,
-192.5250,164.7300,198.9000,222.4875,203.4900,218.5350,218.5350,229.2450,178.7550,172.6350,155.8050,170.8500,158.3550,203.2350,255.0000,212.4150,
-100.3425,228.4800,251.8125,254.8725,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,253.5975,165.8775,
-0.0000,1.6575,16.1925,32.1300,50.8725,52.9125,69.6150,58.9050,77.7750,109.3950,119.8500,100.5975,113.0925,72.5475,37.6125,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
-0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000};*/
 
 // The discretized drawing area: 16x16 grids, max value of each grid is 255
 byte GRID[16][16];
@@ -390,6 +375,8 @@ void area_setup() {
   tft.setTextSize(1);
   tft.setCursor(W2, 10);
   tft.print(F("LeNet-1 on UNO R4\n"));
+
+  showBMP("logo.bmp", W2, 25);
 }
 
 
@@ -430,28 +417,6 @@ void draw_buttons(char *label1, char *label2) {
   tft.setCursor(W2 + 8, 320 - W8 + 6);
   tft.print(label2);
 }
-
-
-/*void print_label(byte label) {
-  tft.fillRect(L, 0, 240 - L, L, TFT_BLACK);
-  tft.setCursor(W16 * 10, W16);
-  tft.setTextSize(1);
-
-  if (label == 255) {
-    tft.print(F("Please wait!"));
-  } else if (label == 254) {
-    tft.print(F("Go ahead!"));
-  } else {
-    tft.print(F("Prediction:"));
-
-    tft.setCursor(W16 * 11, W16 * 2);
-    tft.setTextSize(4);
-
-    char label_txt[8];
-    itoa(label, label_txt, 10);
-    tft.print(label);
-  }
-}*/
 
 
 // Arduino setup function
@@ -571,21 +536,31 @@ void summarize(float et){
   float *y = OUTPUT_GRID[0]; // reuse global memory
   tft.setTextSize(1);
   tft.setCursor(0, W16 * 10);
-  
+    
+  // Find the largest class
   uint16_t label = 0;
   float max_y = 0;
 
   for (uint16_t i=0; i<10; i++){
-    tft.print(i);
-    tft.print(" : ");
-    tft.println(y[i], 4);
-
     if(y[i] > max_y){
       max_y = y[i];
       label = i;
     }
   }
-  
+
+  // Print the results
+  for (uint16_t i=0; i<10; i++){
+    if (i==label)
+      tft.setTextColor(TFT_RED);
+
+    tft.print(i);
+    tft.print(" : ");
+    tft.println(y[i], 4);
+
+    if (i==label)
+      tft.setTextColor(TFT_GREEN);
+  }  
+
   tft.print(F("\n----------------------------------\nPrediction: "));
   tft.setTextColor(TFT_RED);
   tft.print(label);
