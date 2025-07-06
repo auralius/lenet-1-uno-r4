@@ -17,7 +17,7 @@ TSPoint tp;
 SdFat SD;
 
 #define SD_CS 10
-#define MINPRESSURE 300
+#define MINPRESSURE 200
 #define MAXPRESSURE 1000
 #define PENRADIUS 1
 
@@ -31,10 +31,27 @@ const int16_t W2 = 240 / 2;
 
 byte ROI[8];  //xmin, ymin, xmax, ymax, width, length, center x, center y
 
+/*uint16_t ONE[16][16] = {0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.2550,0.3825,0.0000,0.0000,0.0000,0.0000,0.0000,4.2075,109.6500,44.1150,
+192.5250,164.7300,198.9000,222.4875,203.4900,218.5350,218.5350,229.2450,178.7550,172.6350,155.8050,170.8500,158.3550,203.2350,255.0000,212.4150,
+100.3425,228.4800,251.8125,254.8725,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,255.0000,253.5975,165.8775,
+0.0000,1.6575,16.1925,32.1300,50.8725,52.9125,69.6150,58.9050,77.7750,109.3950,119.8500,100.5975,113.0925,72.5475,37.6125,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,
+0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000,0.0000};*/
+
 // The discretized drawing area: 16x16 grids, max value of each grid is 255
-float GRID[16][16];
+byte GRID[16][16];
 float OUTPUT_GRID[16][16];
-float y[10];
+float KERNEL[5][5];
 
 // Grayscale colors in 17 steps: 0 to 16
 uint16_t GREYS[17];
@@ -66,6 +83,18 @@ void reset_grid() {
 }
 
 
+int16_t update_progress(int16_t p, uint16_t max=240, uint16_t color=TFT_BLUE) {
+  if (p==0){
+    tft.fillRect(0, L+1, 240, 3, TFT_BLACK);
+    return 1;
+  }  
+
+  p = p + 1;
+  int16_t e = float(p) / (float)max * 240.0;
+  tft.fillRect(0, L+1, e, 3, color);
+  return p;
+}
+
 float read_float(File &f) {
   char s[20];
   f.readBytesUntil('\n', (char *)s, sizeof(s));
@@ -81,10 +110,17 @@ void delete_file(char *fn) {
 
 float get_padded_x(int16_t i, int16_t j, int16_t W, int16_t P) {
   if ((i < P) || (j < P) || (i > (W - 1 + P)) || (j > (W - 1 + P)))
-    return 0;
+    return 0.0;
 
-  return GRID[j - P][i - P];
+  return (float)GRID[j - P][i - P];
 }
+
+
+void do_bias(float bias, uint16_t n){
+  for (int16_t i = 0; i < n; i++) 
+    for (int16_t j = 0; j < n; j++) 
+      OUTPUT_GRID[i][j] = OUTPUT_GRID[i][j] + bias;
+} 
 
 
 void do_relu(uint16_t n){
@@ -97,10 +133,9 @@ void do_relu(uint16_t n){
 
 void do_pooling(uint16_t n){
   // Max Pooling
-  float v = 0;
-  for (int16_t i = 0; i < 8; i++) {
-    for (int16_t j = 0; j < 8; j++) {
-      v = 0.0;
+  for (int16_t i = 0; i < n; i++) {
+    for (int16_t j = 0; j < n; j++) {
+      float v = 0.0;
       for (int16_t k = 0; k < 2; k++)
        for (int16_t l = 0; l < 2; l++)
          if (v < OUTPUT_GRID[i * 2 + k][j * 2 + l])
@@ -111,15 +146,14 @@ void do_pooling(uint16_t n){
 }
 
 
-void do_convolution(float kernel[5][5], float bias, uint16_t n) {
+void do_convolution(uint16_t n) {
   // The kernel is always a 5x5-mtrix
-  // Convolution
   for (int16_t i = 0; i < n; i++) {
     for (int16_t j = 0; j < n; j++) {
-      float v = bias;
+      float v = 0;
       for (int16_t k = 0; k < 5; k++)
         for (int16_t l = 0; l < 5; l++)
-          v = v + kernel[k][l] *  get_padded_x(i + k, j + l, n, 2);
+          v = v + KERNEL[k][l] *  get_padded_x(i + k, j + l, n, 2);
       OUTPUT_GRID[i][j] = OUTPUT_GRID[i][j] + v;
     }
   }
@@ -138,6 +172,19 @@ void grid_from_file(char* fn, uint16_t m, uint16_t n){
 }
 
 
+
+void kernel_from_file(char* fn){
+  File fi;
+  fi = SD.open(fn, FILE_READ);
+  
+  for(uint16_t i=0; i<5; i++)
+    for(uint16_t j=0; j<5; j++)
+      KERNEL[i][j] = read_float(fi);
+
+  fi.close();  
+}
+
+
 void reset_output_grid(){
   for(uint16_t i=0; i<16; i++)
     for(uint16_t j=0; j<16; j++)
@@ -146,15 +193,16 @@ void reset_output_grid(){
 
 
 void C1() {
+  int16_t progress = 0;
   float kernel[5][5];
-  float bias[12];
+  float bias;
 
   // 1 input, 12 outputs
   char w_fn[13] = "w1-a-x.txt\0\n";
   char b_fn[8] = "w2.txt";
   char o_fn[13] = "o1-x.txt\0\n";
 
-  File fw, fb, fo;
+  File fb, fo;
 
   fb = SD.open(b_fn, FILE_READ);
 
@@ -165,15 +213,13 @@ void C1() {
     o_fn[3] = k + 'a';
 
     // Get the bias
-    bias[k] = read_float(fb);
+    bias = read_float(fb);
 
     // Get the kernel matrix
-    fw = SD.open(w_fn, FILE_READ);
-    for (uint16_t i = 0; i < 5; i++)
-      for (uint16_t j = 0; j < 5; j++)
-        kernel[i][j] = read_float(fw);
-
-    do_convolution(kernel, bias[k], 16);
+    kernel_from_file(w_fn);
+    
+    do_convolution(16);
+    do_bias(bias, 16);
     do_relu(16);
     do_pooling(8);
 
@@ -188,7 +234,7 @@ void C1() {
     }
 
     fo.close();
-    fw.close();
+    progress = update_progress(progress, 12);
   }
 
   fb.close();
@@ -196,8 +242,8 @@ void C1() {
 
 
 void C2() {
-  float kernel[5][5];
-  float bias[12];
+  int16_t progress = 0;
+  float bias;
 
   // 12 input, 12 outputs
   char i_fn[13] = "o1-x.txt\0\n";
@@ -205,12 +251,12 @@ void C2() {
   char b_fn[8]  = "w4.txt";
   char o_fn[13] = "o2-x.txt\0\n";
 
-  File fw, fb, fo;
+  File fb, fo;
 
   fb = SD.open(b_fn, FILE_READ);
   for (uint16_t O = 0; O < 12; O++) {
     reset_output_grid();
-    bias[O] = read_float(fb);
+    bias = read_float(fb);
     
     for (uint16_t I = 0; I < 12; I++) {
       i_fn[3] = I + 'a'; 
@@ -218,23 +264,13 @@ void C2() {
       w_fn[5] = O + 'a';
 
       grid_from_file(i_fn, 8, 8);
+      kernel_from_file(w_fn);
+      do_convolution(8);
 
-      // Get the kernel matrix
-      fw.open(w_fn, FILE_READ);
-      for (uint16_t i = 0; i < 5; i++)
-        for (uint16_t j = 0; j < 5; j++) {
-          kernel[i][j] = read_float(fw);
-        }
-      fw.close();
-
-      do_convolution(kernel, 0.0, 8);
+      progress = update_progress(progress, 12*12);
     }
 
-
-    for (uint16_t i = 0; i < 8; i++) 
-      for (uint16_t j = 0; j < 8; j++) 
-        OUTPUT_GRID[i][j] = OUTPUT_GRID[i][j] + bias[O];
-
+    do_bias(bias, 8);
     do_relu(8);
     do_pooling(4);
 
@@ -271,9 +307,11 @@ void NN0() {
 
 
 void NN1() {
+  int16_t progress = 0;
   File fw, fo, fb;
   fw = SD.open("w5.txt", FILE_READ);
   fb = SD.open("w6.txt", FILE_READ);
+
   delete_file("o3.txt");
   fo = SD.open("o3.txt", FILE_WRITE);
   
@@ -288,6 +326,8 @@ void NN1() {
     
     fo.print(h, 9);
     fo.println('\0');  
+
+    progress = update_progress(progress, 30);
   }
 
   fo.close();
@@ -297,21 +337,21 @@ void NN1() {
 
 
 void NN2() {
+  int16_t progress = 0;
   File fi, fw, fb;
-  
-  fi = SD.open("o3.txt", FILE_READ);
-  float x[30];
-  for (uint16_t k=0; k<30; k++)
-    x[k] = read_float(fi);
-  fi.close();
+  float *y = OUTPUT_GRID[0]; // reuse
 
   fw = SD.open("w7.txt", FILE_READ);
   fb = SD.open("w8.txt", FILE_READ);
   
   for (uint16_t j=0; j<10; j++){
     y[j] = read_float(fb);
+    fi = SD.open("o3.txt", FILE_READ);
     for (uint16_t k=0; k<30; k++)  
-      y[j] = y[j] + x[k] * read_float(fw);  
+      y[j] = y[j] + read_float(fi)* read_float(fw);  
+    fi.close();
+
+    progress = update_progress(progress, 10);
   }
 
   fw.close();
@@ -320,39 +360,36 @@ void NN2() {
 
 
 // Normalize the numbers in the grids such that they range from 0 to 16
-void normalize_grid(int16_t n) {
+// Normalize the numbers in the grids such that they range from 0 to 16
+void normalize_grid() {
   // find the maximum
-  float maxval = 0;
-  for (int16_t i = 0; i < n; i++)
-    for (int16_t j = 0; j < n; j++)
+  int16_t maxval = 0;
+  for (int16_t i = 0; i < 16; i++)
+    for (int16_t j = 0; j < 16; j++)
       if (GRID[i][j] > maxval)
         maxval = GRID[i][j];
 
   // normalize such that the maximum is 255.0
-  for (int16_t i = 0; i < n; i++)
-    for (int16_t j = 0; j < n; j++)
-      GRID[i][j] = GRID[i][j] / maxval * 255.0; 
+  for (int16_t i = 0; i < 16; i++)
+    for (int16_t j = 0; j < 16; j++) 
+      GRID[i][j] = round((float)GRID[i][j] / (float)maxval * 255.0);  // round instead of floor!
 }
 
 
 // Draw the grids in the screen
 // The fill-color or the gray-level of each grid is set based on its value
 void area_setup() {
-  tft.fillRect(0, 0, W2, 320 - W8, TFT_BLACK);
+  tft.fillRect(0, 0, 240, 320 - W8, TFT_BLACK);
 
   for (int16_t i = 0; i < 16; i++)
     for (int16_t j = 0; j < 16; j++)
-      tft.fillRect(i * L16, j * L16, L16, L16, GREYS[(uint16_t)GRID[i][j] / 16]);
+      tft.fillRect(i * L16, j * L16, L16, L16, GREYS[GRID[i][j] / 16]);
 
   tft.drawRect(0, 0, L, L, TFT_GREEN);
-}
 
-void area_setup2() {
-  for (int16_t i = 0; i < 8; i++)
-    for (int16_t j = 0; j < 8; j++)
-      tft.fillRect(i * L8, j * L8, L8, L8, GREYS[(uint16_t)OUTPUT_GRID[i][j] / 16]);
-
-  tft.drawRect(0, 0, L, L, TFT_GREEN);
+  tft.setTextSize(1);
+  tft.setCursor(W2, 10);
+  tft.print(F("LeNet-1 on UNO R4\n"));
 }
 
 
@@ -376,18 +413,14 @@ void track_roi(int16_t xpos, int16_t ypos) {
 
 
 // Draw the ROI as a TFT_RED rectangle
-/*void draw_roi() {
+void draw_roi() {
   tft.drawRect(ROI[0], ROI[1], ROI[4], ROI[5], TFT_RED);
   tft.drawCircle(ROI[6], ROI[7], 2, TFT_RED);
-}*/
+}
 
 
 // Draw the two button at the bottom of the screen
-void draw_buttons(char *label1, char *label2) {
-  tft.setTextSize(1);
-  tft.setCursor(W2, 10);
-  tft.print(F("LeNet-1 on UNO R4\n"));
-  
+void draw_buttons(char *label1, char *label2) {  
   // Add 2 buttons in the bottom: CLEAR and PREDICT
   tft.fillRect(0, 320 - W8, W2, W2, TFT_BLUE);
   tft.fillRect(W2, 320 - W8, W2, W2, TFT_RED);
@@ -399,7 +432,6 @@ void draw_buttons(char *label1, char *label2) {
 }
 
 
-// Put text at the bottom of the screen, right above the two buttons
 /*void print_label(byte label) {
   tft.fillRect(L, 0, 240 - L, L, TFT_BLACK);
   tft.setCursor(W16 * 10, W16);
@@ -424,7 +456,7 @@ void draw_buttons(char *label1, char *label2) {
 
 // Arduino setup function
 void setup(void) {
-  Serial.begin(9600);
+  //Serial.begin(9600);
   //while ( !Serial ) delay(2);
 
   create_greys();
@@ -445,7 +477,6 @@ void setup(void) {
 
   reset_grid();
   area_setup();
-  //print_label(254);
   draw_buttons("CLEAR", "PREDICT");
 }
 
@@ -474,13 +505,11 @@ void loop() {
     if ((ypos > tft.height() - W8) && (xpos < W2)) {
       reset_grid();
       area_setup();
-      //print_label(254);
     }
 
     // PREDICT?
     if ((ypos > tft.height() - W8) && (xpos > W2)) {
-      //print_label(255);
-      //draw_roi();
+      draw_roi();
 
       for (byte i = 0; i < 16; i++) {
         for (byte j = 0; j < 16; j++) {
@@ -498,7 +527,7 @@ void loop() {
                 int16_t y_ = s * (float)(y - ROI[1]) + 0.5 * (a - s * (float)ROI[5]);
 
                 if ((x_ >= 0) && (x_ < L) && (y_ >= 0) && (y_ < L)) {
-                  tft.fillCircle(x_, y_, 1, TFT_GREEN);
+                  tft.fillCircle(x, y, 1, TFT_RED);
                   GRID[x_ / L16][y_ / L16] = GRID[x_ / L16][y_ / L16] + 1;
                 }
               }
@@ -508,41 +537,40 @@ void loop() {
       }
 
       //delay(1000)
-      normalize_grid(16);
+      normalize_grid();
       area_setup();
       
       tft.setTextSize(1);
       tft.setCursor(0, W16 * 7);
       
       unsigned long st = micros();  // timer starts
-      tft.println(F("Conv layer 1..."));
+
+      tft.println(F("Conv layer 1 ..."));
       C1();
       
-      tft.println(F("Conv layer 2..."));
+      tft.println(F("Conv layer 2 ..."));
       C2();
 
-      tft.println(F("Flattening..."));
       NN0();
 
-      tft.println(F("NN layer 1..."));
+      tft.println(F("NN layer 1 ..."));
       NN1();
 
-      tft.println(F("NN layer 2..."));
+      tft.println(F("NN layer 2 ..."));
       NN2();
       
       float et = (float)(micros() - st) * 1e-6;  // timer stops
       
       summarize(et);
       reset_grid();
-      
     }
   }
 }
 
 void summarize(float et){
+  float *y = OUTPUT_GRID[0]; // reuse global memory
   tft.setTextSize(1);
   tft.setCursor(0, W16 * 10);
-  tft.print(F("\n-------------\n"));
   
   uint16_t label = 0;
   float max_y = 0;
@@ -558,13 +586,13 @@ void summarize(float et){
     }
   }
   
-  tft.print(F("\n-------------\nPrediction: "));
+  tft.print(F("\n----------------------------------\nPrediction: "));
+  tft.setTextColor(TFT_RED);
   tft.print(label);
-
+  tft.setTextColor(TFT_GREEN);
+  
   // Display the elapsed time
-  tft.print("\n\nIn ");
+  tft.print(F(" -- in "));
   tft.print(et, 2);
-  tft.println(" s.");
+  tft.println(F(" seconds."));
 }
-
-
