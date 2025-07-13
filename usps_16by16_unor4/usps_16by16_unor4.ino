@@ -9,9 +9,9 @@ SdFat SD;
 MCUFRIEND_kbv tft;  // hard-wiTFT_RED for UNO shields anyway.
 
 #include <TouchScreen.h>
-const int XP = 6, XM = A2, YP = A1, YM = 7;  //240x320 ID=0x9341
+const uint16_t XP = 6, XM = A2, YP = A1, YM = 7;  //240x320 ID=0x9341
 //const int XP = 8, YP = A3, XM = A2, YM = 9;
-const int TS_LEFT = 154, TS_RT = 902, TS_TOP = 184, TS_BOT = 919;
+const int16_t TS_LEFT = 154, TS_RT = 902, TS_TOP = 184, TS_BOT = 919;
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 300);
 TSPoint tp;
 
@@ -35,8 +35,7 @@ byte ROI[8];  //xmin, ymin, xmax, ymax, width, length, center x, center y
 
 // The discretized drawing area: 16x16 grids, max value of each grid is 255
 byte GRID[16][16];
-float OUTPUT_GRID[16][16];
-float KERNEL[5][5];
+float *OUTPUT_BUFFER;
 
 // Grayscale colors in 17 steps: 0 to 16
 uint16_t GREYS[17];
@@ -52,12 +51,9 @@ void create_greys() {
 
 // Clear the grid data, set all to 0
 void reset_grid() {
-  for (int16_t i = 0; i < 16; i++){
-    for (int16_t j = 0; j < 16; j++){
-      GRID[i][j] = 0.0;
-      OUTPUT_GRID[i][j] = 0.0;
-    }
-  }
+  for (int16_t i = 0; i < 16; i++) 
+    for (int16_t j = 0; j < 16; j++) 
+      GRID[i][j] = 0;
 
   // Reset ROI
   for (int16_t i = 0; i < 8; i++)
@@ -68,19 +64,19 @@ void reset_grid() {
 }
 
 
-int16_t update_progress(int16_t p, uint16_t max=240, uint16_t color=TFT_BLUE) {
-  if (p==0){
-    tft.fillRect(0, L+1, 240, 3, TFT_BLACK);
+int16_t update_progress(int16_t p, uint16_t max = 240, uint16_t color = TFT_BLUE) {
+  if (p == 0) {
+    tft.fillRect(0, L + 1, 240, 3, TFT_BLACK);
     return 1;
-  }  
+  }
 
   p = p + 1;
   int16_t e = float(p) / (float)max * 240.0;
-  tft.fillRect(0, L+1, e, 3, color);
+  tft.fillRect(0, L + 1, e, 3, color);
   return p;
 }
 
-float read_float(File &f) {
+float noodle_read_float(File &f) {
   char s[20];
   f.readBytesUntil('\n', (char *)s, sizeof(s));
   return atof(s);
@@ -88,8 +84,25 @@ float read_float(File &f) {
 
 
 void delete_file(char *fn) {
-  File f = SD.open(fn, FILE_WRITE);
-  f.remove();
+  //File f = SD.open(fn, FILE_WRITE);
+  SD.remove(fn);
+}
+
+
+float * noodle_create_buffer(uint16_t size){
+  return (float *)malloc(size);
+}
+
+
+void grid_to_file(char *fn, uint16_t n) {
+  delete_file(fn);
+  File fo = SD.open(fn, FILE_WRITE);
+  for (int16_t i = 0; i < n; i++)
+    for (int16_t j = 0; j < n; j++) {
+      fo.print(GRID[j][i]); //transposed
+      fo.println('\0');
+    }
+  fo.close();
 }
 
 
@@ -101,242 +114,211 @@ float get_padded_x(int16_t i, int16_t j, int16_t W, int16_t P) {
 }
 
 
-void do_bias(float bias, uint16_t n){
-  for (int16_t i = 0; i < n; i++) 
-    for (int16_t j = 0; j < n; j++) 
-      OUTPUT_GRID[i][j] = OUTPUT_GRID[i][j] + bias;
-} 
+// Bias with ReLU
+uint16_t noodle_do_bias(float * output, float bias, uint16_t n) {
+  for (int16_t i = 0; i < n; i++) {
+    for (int16_t j = 0; j < n; j++) {
+      output[i * n + j] = output[i * n + j] + bias;
+      if (output[i * n + j] < 0.0)
+        output[i * n + j] = 0.0;
+    }
+  }
+  return n;
+}
 
 
-void do_relu(uint16_t n){
-  for (int16_t i = 0; i < n; i++) 
-    for (int16_t j = 0; j < n; j++) 
-      if (OUTPUT_GRID[i][j] < 0.0)
-        OUTPUT_GRID[i][j] = 0.0;
-} 
+// Do pooling and strore the result
+uint16_t noodle_do_pooling(float *output, uint16_t W, uint16_t K, uint16_t S, char *fn) {
+  uint16_t Wo = (W - K) / S + 1;
+  delete_file(fn);
+  File fo = SD.open(fn, FILE_WRITE);
 
-
-void do_pooling(uint16_t n){
   // Max Pooling
-  for (int16_t i = 0; i < n; i++) {
-    for (int16_t j = 0; j < n; j++) {
+  for (int16_t i = 0; i < Wo; i++) {
+    for (int16_t j = 0; j < Wo; j++) {
       float v = 0.0;
-      for (int16_t k = 0; k < 2; k++)
-       for (int16_t l = 0; l < 2; l++)
-         if (v < OUTPUT_GRID[i * 2 + k][j * 2 + l])
-            v = OUTPUT_GRID[i * 2 + k][j * 2 + l];
-      OUTPUT_GRID[i][j] = v;
+      for (int16_t k = 0; k < K; k++)
+        for (int16_t l = 0; l < K; l++)
+          if (v < output[(i * S + k) * W + (j * S + l)])
+            v = output[(i * S + k) * W + (j * S + l)];
+   
+      output[i * Wo + j] = v;
+   
+      fo.print(output[i * Wo + j], 8);
+      fo.println('\0');
     }
   }
+  fo.close();
+
+  return Wo;
 }
 
+// Input size is W x W.
+// The kernel filter size is K x K.
+// The padding is P (uniform and zero padding).
+// The stride length is S
+uint16_t noodle_do_convolution(float* kernel, uint16_t K, uint16_t W, float *output_buffer, uint16_t P, uint16_t S) {
+  // Caclulate the output size
+  uint16_t V = (W - K + 2 * P) / S + 1;
 
-void do_convolution(uint16_t n) {
-  // The kernel is always a 5x5-mtrix
-  for (int16_t i = 0; i < n; i++) {
-    for (int16_t j = 0; j < n; j++) {
+  for (int16_t i = 0; i < V; i++) {
+    for (int16_t j = 0; j < V; j++) {
       float v = 0;
-      for (int16_t k = 0; k < 5; k++)
-        for (int16_t l = 0; l < 5; l++)
-          v = v + KERNEL[k][l] *  get_padded_x(i + k, j + l, n, 2);
-      OUTPUT_GRID[i][j] = OUTPUT_GRID[i][j] + v;
+      for (int16_t k = 0; k < K; k++)
+        for (int16_t l = 0; l < K; l++)
+          v = v + kernel[k * K + l] * get_padded_x(i * S + k, j * S + l, W, P);
+      output_buffer[i * V + j] = output_buffer[i * V + j] + v;
     }
   }
+
+  return V;
 }
 
 
-void grid_from_file(char* fn, uint16_t m, uint16_t n){
+// Load an (n x n)-grid from a file.
+void noodle_grid_from_file(char *fn, uint16_t n, bool transposed=false) {
   File fi;
   fi = SD.open(fn, FILE_READ);
-  
-  for(uint16_t i=0; i<m; i++)
-    for(uint16_t j=0; j<n; j++)
-      GRID[j][i] = read_float(fi);
 
-  fi.close();  
+  for (uint16_t i = 0; i < n; i++)
+    for (uint16_t j = 0; j < n; j++){
+    if (transposed)
+      GRID[j][i] = noodle_read_float(fi);
+    else
+      GRID[j][i] = noodle_read_float(fi);
+    }
+
+  fi.close();
 }
 
 
-
-void kernel_from_file(char* fn){
+// Load a square matrix from a file (K x K). 
+// The matrix was previously stored linearly
+void noodle_read_from_file(char *fn, float *buffer, uint16_t K, bool transposed=false) {
   File fi;
   fi = SD.open(fn, FILE_READ);
-  
-  for(uint16_t i=0; i<5; i++)
-    for(uint16_t j=0; j<5; j++)
-      KERNEL[i][j] = read_float(fi);
 
-  fi.close();  
+  for (uint16_t i = 0; i < K; i++)
+    for (uint16_t j = 0; j < K; j++)
+      if (!transposed)
+        buffer[i * K + j] = noodle_read_float(fi);
+      else
+        buffer[j * K + i] = noodle_read_float(fi);
+  fi.close();
 }
 
 
-void reset_output_grid(){
-  for(uint16_t i=0; i<16; i++)
-    for(uint16_t j=0; j<16; j++)
-      OUTPUT_GRID[i][j] = 0.0;
+void noodle_reset_buffer(float *buffer, uint16_t n) {
+  for (uint16_t i = 0; i < n; i++)
+      buffer[i] = 0.0;
 }
 
-
-void C1() {
+uint16_t noodle_conv(float *output_buffer, uint16_t W, uint16_t n_inputs, uint16_t n_filters, char *in_fn, char *out_fn, char *weight_fn, char *bias_fn) {
   int16_t progress = 0;
+
+  char i_fn[12];
+  char o_fn[12];
+  char w_fn[12];
+  strcpy(i_fn, in_fn);
+  strcpy(o_fn, out_fn);
+  strcpy(w_fn, weight_fn);
+
+  File fb, fo;
   float kernel[5][5];
-  float bias;
+  uint16_t V;
 
-  // 1 input, 12 outputs
-  char w_fn[13] = "w1-a-x.txt\0\n";
-  char b_fn[8] = "w2.txt";
-  char o_fn[13] = "o1-x.txt\0\n";
-
-  File fb, fo;
-
-  fb = SD.open(b_fn, FILE_READ);
-
-  for (uint16_t k = 0; k < 12; k++) {
-    reset_output_grid();
-
-    w_fn[5] = k + 'a';
-    o_fn[3] = k + 'a';
-
-    // Get the bias
-    bias = read_float(fb);
-
-    // Get the kernel matrix
-    kernel_from_file(w_fn);
-    
-    do_convolution(16);
-    do_bias(bias, 16);
-    do_relu(16);
-    do_pooling(8);
-
-    // Write ouput to file  
-    delete_file(o_fn);
-    fo = SD.open(o_fn, FILE_WRITE);
-    for (uint16_t i = 0; i < 8; i++) {
-      for (uint16_t j = 0; j < 8; j++) {
-        fo.print(OUTPUT_GRID[i][j], 9);
-        fo.println('\0');
-      }
-    }
-
-    fo.close();
-    progress = update_progress(progress, 12);
-  }
-
-  fb.close();
-}
-
-
-void C2() {
-  int16_t progress = 0;
-  float bias;
-
-  // 12 input, 12 outputs
-  char i_fn[13] = "o1-x.txt\0\n";
-  char w_fn[13] = "w3-x-x.txt\0\n";
-  char b_fn[8]  = "w4.txt";
-  char o_fn[13] = "o2-x.txt\0\n";
-
-  File fb, fo;
-
-  fb = SD.open(b_fn, FILE_READ);
-  for (uint16_t O = 0; O < 12; O++) {
-    reset_output_grid();
-    bias = read_float(fb);
-    
-    for (uint16_t I = 0; I < 12; I++) {
-      i_fn[3] = I + 'a'; 
+  fb = SD.open(bias_fn, FILE_READ);
+  for (uint16_t O = 0; O < n_filters; O++) {
+    noodle_reset_buffer(OUTPUT_BUFFER, 16*16);
+    float bias = noodle_read_float(fb);
+    for (uint16_t I = 0; I < n_inputs; I++) {
+      i_fn[3] = I + 'a';
       w_fn[3] = I + 'a';
       w_fn[5] = O + 'a';
+      noodle_grid_from_file(i_fn, W, true);
+      noodle_read_from_file(w_fn, (float *)kernel, 5);
+      V = noodle_do_convolution((float *)kernel, 5, W, output_buffer, 2, 1);
 
-      grid_from_file(i_fn, 8, 8);
-      kernel_from_file(w_fn);
-      do_convolution(8);
-
-      progress = update_progress(progress, 12*12);
+      progress = update_progress(progress, n_inputs * n_filters);
     }
 
-    do_bias(bias, 8);
-    do_relu(8);
-    do_pooling(4);
+    V = noodle_do_bias(output_buffer, bias, V);
 
-    // Write output to file
     o_fn[3] = O + 'a';
-    delete_file(o_fn);
-    fo = SD.open(o_fn, FILE_WRITE);
-    for (uint16_t i = 0; i < 4; i++) 
-      for (uint16_t j = 0; j < 4; j++) {
-        fo.print(OUTPUT_GRID[i][j], 9);
-        fo.println('\0');    
-      }
-    fo.close();
+    V = noodle_do_pooling(output_buffer, V, 2, 2, o_fn);
   }
 
   fb.close();
+
+  return V;
 }
 
-
-void NN0() {
-  // Flattening
-  char i_fn[13] = "o2-x.txt\0\n";
+// Flattening, from a several input files to output_buffer
+uint16_t noodle_flat( float *output_buffer, char * in_fn, uint16_t V, uint16_t n_filters) {
+  char i_fn[12];
+  strcpy(i_fn, in_fn);
+  
   File fi;
 
-  reset_output_grid();
-  for(uint16_t k=0; k<12; k++){
+  noodle_reset_buffer(output_buffer, V * V * n_filters);
+  for (uint16_t k = 0; k < n_filters; k++) {
     i_fn[3] = k + 'a';
     fi = SD.open(i_fn, FILE_READ);
-    for(uint16_t i=0; i<16; i++)
-      OUTPUT_GRID[k][i] = read_float(fi);
+    for (uint16_t i = 0; i < (V * V); i++)
+      output_buffer[i * n_filters + k] = noodle_read_float(fi);
     fi.close();
   }
+  return V * V * n_filters;
 }
 
-
-void NN1() {
+// From output_buffer to one out_fn
+uint16_t noodle_fcn(float * output_buffer, uint16_t n_inputs, uint16_t n_outputs, char * out_fn, char *weight_fn, char * bias_fn) {
   int16_t progress = 0;
-  File fw, fo, fb;
-  fw = SD.open("w5.txt", FILE_READ);
-  fb = SD.open("w6.txt", FILE_READ);
 
-  delete_file("o3.txt");
-  fo = SD.open("o3.txt", FILE_WRITE);
-  
-  for (uint16_t k=0; k<30; k++){
-    float h = read_float(fb);
-    for (uint16_t j=0; j<16; j++)
-      for (uint16_t i=0; i<12; i++)
-        h = h + OUTPUT_GRID[i][j] * read_float(fw);  
-    
+  File fw, fo, fb;
+  fw = SD.open(weight_fn, FILE_READ);
+  fb = SD.open(bias_fn, FILE_READ);
+
+  delete_file(out_fn);
+  fo = SD.open(out_fn, FILE_WRITE);
+
+  for (uint16_t k = 0; k < n_outputs; k++) {
+    float h = noodle_read_float(fb);
+    for (uint16_t j = 0; j < n_inputs; j++)
+      h = h + output_buffer[j] * noodle_read_float(fw);
+
     if (h < 0.0)
       h = 0.0;
-    
-    fo.print(h, 9);
-    fo.println('\0');  
 
-    progress = update_progress(progress, 30);
+    fo.print(h, 8);
+    fo.println('\0');
+
+    progress = update_progress(progress, n_outputs);
   }
 
   fo.close();
   fw.close();
   fb.close();
+  Serial.println(n_outputs);
+  return n_outputs;
 }
 
-
-void NN2() {
+// From one in_fn to output_buffer
+uint16_t noodle_fcn(char * in_fn, uint16_t n_inputs, uint16_t n_outputs, float * output_buffer, char *weight_fn, char * bias_fn) {
   int16_t progress = 0;
   File fi, fw, fb;
-  float *y = OUTPUT_GRID[0]; // reuse
 
-  fw = SD.open("w7.txt", FILE_READ);
-  fb = SD.open("w8.txt", FILE_READ);
-  
-  for (uint16_t j=0; j<10; j++){
-    y[j] = read_float(fb);
-    fi = SD.open("o3.txt", FILE_READ);
-    for (uint16_t k=0; k<30; k++)  
-      y[j] = y[j] + read_float(fi)* read_float(fw);  
+  fw = SD.open(weight_fn, FILE_READ);
+  fb = SD.open(bias_fn, FILE_READ);
+
+  for (uint16_t j = 0; j < n_outputs; j++) {
+    output_buffer[j] = noodle_read_float(fb);
+    fi = SD.open(in_fn, FILE_READ);
+    for (uint16_t k = 0; k < n_inputs; k++)
+      output_buffer[j] = output_buffer[j] + noodle_read_float(fi) * noodle_read_float(fw);
     fi.close();
 
-    progress = update_progress(progress, 10);
+    progress = update_progress(progress, n_outputs);
   }
 
   fw.close();
@@ -344,7 +326,6 @@ void NN2() {
 }
 
 
-// Normalize the numbers in the grids such that they range from 0 to 16
 // Normalize the numbers in the grids such that they range from 0 to 16
 void normalize_grid() {
   // find the maximum
@@ -356,7 +337,7 @@ void normalize_grid() {
 
   // normalize such that the maximum is 255.0
   for (int16_t i = 0; i < 16; i++)
-    for (int16_t j = 0; j < 16; j++) 
+    for (int16_t j = 0; j < 16; j++)
       GRID[i][j] = round((float)GRID[i][j] / (float)maxval * 255.0);  // round instead of floor!
 }
 
@@ -407,7 +388,7 @@ void draw_roi() {
 
 
 // Draw the two button at the bottom of the screen
-void draw_buttons(char *label1, char *label2) {  
+void draw_buttons(char *label1, char *label2) {
   // Add 2 buttons in the bottom: CLEAR and PREDICT
   tft.fillRect(0, 320 - W8, W2, W2, TFT_BLUE);
   tft.fillRect(W2, 320 - W8, W2, W2, TFT_RED);
@@ -421,7 +402,7 @@ void draw_buttons(char *label1, char *label2) {
 
 // Arduino setup function
 void setup(void) {
-  //Serial.begin(9600);
+  Serial.begin(9600);
   //while ( !Serial ) delay(2);
 
   create_greys();
@@ -433,8 +414,9 @@ void setup(void) {
   tft.setCursor(0, 10);
   tft.setTextSize(1);
   tft.setTextColor(TFT_GREEN);
+  
 
-  if (!SD.begin(SD_CS)) {
+  if (!SD.begin(SD_CS, 24000000)) {
     tft.println(F("cannot start SD"));
     while (1)
       ;
@@ -443,6 +425,8 @@ void setup(void) {
   reset_grid();
   area_setup();
   draw_buttons("CLEAR", "PREDICT");
+
+  OUTPUT_BUFFER = noodle_create_buffer(16*16);
 }
 
 
@@ -501,71 +485,76 @@ void loop() {
         }
       }
 
-      //delay(1000)
       normalize_grid();
       area_setup();
-      
+
       tft.setTextSize(1);
       tft.setCursor(0, W16 * 7);
-      
+
+      grid_to_file("i1-a.txt", 16);
+
       unsigned long st = micros();  // timer starts
+      uint16_t V;
 
       tft.println(F("Conv layer 1 ..."));
-      C1();
-      
-      tft.println(F("Conv layer 2 ..."));
-      C2();
+      V = noodle_conv(OUTPUT_BUFFER, 16, 1, 12, "i1-x.txt", "o1-x.txt", "w1-x-x.txt", "w2.txt");
 
-      NN0();
+      tft.println(F("Conv layer 2 ..."));
+      V = noodle_conv(OUTPUT_BUFFER, V, 12, 12, "o1-x.txt", "o2-x.txt", "w3-x-x.txt", "w4.txt");
+
+      V = noodle_flat(OUTPUT_BUFFER, "o2-x.txt", V, 12);
 
       tft.println(F("NN layer 1 ..."));
-      NN1();
+      V = noodle_fcn(OUTPUT_BUFFER, V, 30, "o3.txt", "w5.txt", "w6.txt");
 
       tft.println(F("NN layer 2 ..."));
-      NN2();
-      
+      V = noodle_fcn("o3.txt", V, 10, OUTPUT_BUFFER, "w7.txt", "w8.txt");
+
+
+
       float et = (float)(micros() - st) * 1e-6;  // timer stops
-      
-      summarize(et);
+
+      summarize(et, OUTPUT_BUFFER);
       reset_grid();
     }
   }
 }
 
-void summarize(float et){
-  float *y = OUTPUT_GRID[0]; // reuse global memory
+
+void summarize(float et, float * output_buffer) {
+  float *y = output_buffer;  // reuse global memory
   tft.setTextSize(1);
   tft.setCursor(0, W16 * 10);
-    
+
   // Find the largest class
   uint16_t label = 0;
   float max_y = 0;
 
-  for (uint16_t i=0; i<10; i++){
-    if(y[i] > max_y){
+  for (uint16_t i = 0; i < 10; i++) {
+    if (y[i] > max_y) {
       max_y = y[i];
       label = i;
     }
   }
 
   // Print the results
-  for (uint16_t i=0; i<10; i++){
-    if (i==label)
+  for (uint16_t i = 0; i < 10; i++) {
+    if (i == label)
       tft.setTextColor(TFT_RED);
 
     tft.print(i);
     tft.print(" : ");
     tft.println(y[i], 4);
 
-    if (i==label)
+    if (i == label)
       tft.setTextColor(TFT_GREEN);
-  }  
+  }
 
   tft.print(F("\n----------------------------------\nPrediction: "));
   tft.setTextColor(TFT_RED);
   tft.print(label);
   tft.setTextColor(TFT_GREEN);
-  
+
   // Display the elapsed time
   tft.print(F(" -- in "));
   tft.print(et, 2);
