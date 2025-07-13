@@ -34,7 +34,7 @@ const int16_t W2 = 240 / 2;
 byte ROI[8];  //xmin, ymin, xmax, ymax, width, length, center x, center y
 
 // The discretized drawing area: 16x16 grids, max value of each grid is 255
-byte GRID[16][16];
+byte GRID[16 * 16];
 float *OUTPUT_BUFFER;
 
 // Grayscale colors in 17 steps: 0 to 16
@@ -53,7 +53,7 @@ void create_greys() {
 void reset_grid() {
   for (int16_t i = 0; i < 16; i++) 
     for (int16_t j = 0; j < 16; j++) 
-      GRID[i][j] = 0;
+      GRID[i * 16 + j] = 0;
 
   // Reset ROI
   for (int16_t i = 0; i < 8; i++)
@@ -99,7 +99,7 @@ void grid_to_file(char *fn, uint16_t n) {
   File fo = SD.open(fn, FILE_WRITE);
   for (int16_t i = 0; i < n; i++)
     for (int16_t j = 0; j < n; j++) {
-      fo.print(GRID[j][i]); //transposed
+      fo.print(GRID[i * n +  j]); //transposed
       fo.println('\0');
     }
   fo.close();
@@ -110,7 +110,7 @@ float get_padded_x(int16_t i, int16_t j, int16_t W, int16_t P) {
   if ((i < P) || (j < P) || (i > (W - 1 + P)) || (j > (W - 1 + P)))
     return 0.0;
 
-  return (float)GRID[j - P][i - P];
+  return (float)GRID[(i - P)  * W + (j - P)];
 }
 
 
@@ -153,6 +153,7 @@ uint16_t noodle_do_pooling(float *output, uint16_t W, uint16_t K, uint16_t S, ch
   return Wo;
 }
 
+
 // Input size is W x W.
 // The kernel filter size is K x K.
 // The padding is P (uniform and zero padding).
@@ -175,24 +176,25 @@ uint16_t noodle_do_convolution(float* kernel, uint16_t K, uint16_t W, float *out
 }
 
 
-// Load an (n x n)-grid from a file.
-void noodle_grid_from_file(char *fn, uint16_t n, bool transposed=false) {
+// Load a BYTE  square matrix from a file (K x K). 
+// The matrix was previously stored linearly
+void noodle_read_from_file(char *fn, byte *buffer, uint16_t K, bool transposed=false) {
   File fi;
   fi = SD.open(fn, FILE_READ);
 
-  for (uint16_t i = 0; i < n; i++)
-    for (uint16_t j = 0; j < n; j++){
+  for (uint16_t i = 0; i < K; i++)
+    for (uint16_t j = 0; j < K; j++){
     if (transposed)
-      GRID[j][i] = noodle_read_float(fi);
+      buffer[j * K + i] = noodle_read_float(fi);
     else
-      GRID[j][i] = noodle_read_float(fi);
+      buffer[i * K + j] = noodle_read_float(fi);
     }
 
   fi.close();
 }
 
 
-// Load a square matrix from a file (K x K). 
+// Load a FLOAT square matrix from a file (K x K). 
 // The matrix was previously stored linearly
 void noodle_read_from_file(char *fn, float *buffer, uint16_t K, bool transposed=false) {
   File fi;
@@ -213,7 +215,7 @@ void noodle_reset_buffer(float *buffer, uint16_t n) {
       buffer[i] = 0.0;
 }
 
-uint16_t noodle_conv(float *output_buffer, uint16_t W, uint16_t n_inputs, uint16_t n_filters, char *in_fn, char *out_fn, char *weight_fn, char *bias_fn) {
+uint16_t noodle_conv(byte * grid, float *output_buffer, uint16_t W, uint16_t n_inputs, uint16_t n_filters, char *in_fn, char *out_fn, char *weight_fn, char *bias_fn) {
   int16_t progress = 0;
 
   char i_fn[12];
@@ -229,13 +231,13 @@ uint16_t noodle_conv(float *output_buffer, uint16_t W, uint16_t n_inputs, uint16
 
   fb = SD.open(bias_fn, FILE_READ);
   for (uint16_t O = 0; O < n_filters; O++) {
-    noodle_reset_buffer(OUTPUT_BUFFER, 16*16);
+    noodle_reset_buffer(output_buffer, W * W);
     float bias = noodle_read_float(fb);
     for (uint16_t I = 0; I < n_inputs; I++) {
       i_fn[3] = I + 'a';
       w_fn[3] = I + 'a';
       w_fn[5] = O + 'a';
-      noodle_grid_from_file(i_fn, W, true);
+      noodle_read_from_file(i_fn, grid, W);
       noodle_read_from_file(w_fn, (float *)kernel, 5);
       V = noodle_do_convolution((float *)kernel, 5, W, output_buffer, 2, 1);
 
@@ -299,7 +301,7 @@ uint16_t noodle_fcn(float * output_buffer, uint16_t n_inputs, uint16_t n_outputs
   fo.close();
   fw.close();
   fb.close();
-  Serial.println(n_outputs);
+
   return n_outputs;
 }
 
@@ -323,6 +325,8 @@ uint16_t noodle_fcn(char * in_fn, uint16_t n_inputs, uint16_t n_outputs, float *
 
   fw.close();
   fb.close();
+
+  return n_outputs;
 }
 
 
@@ -332,13 +336,13 @@ void normalize_grid() {
   int16_t maxval = 0;
   for (int16_t i = 0; i < 16; i++)
     for (int16_t j = 0; j < 16; j++)
-      if (GRID[i][j] > maxval)
-        maxval = GRID[i][j];
+      if (GRID[i * 16 + j] > maxval)
+        maxval = GRID[i * 16 + j];
 
   // normalize such that the maximum is 255.0
   for (int16_t i = 0; i < 16; i++)
     for (int16_t j = 0; j < 16; j++)
-      GRID[i][j] = round((float)GRID[i][j] / (float)maxval * 255.0);  // round instead of floor!
+      GRID[i * 16 + j] = round((float)GRID[i * 16 + j] / (float)maxval * 255.0);  // round instead of floor!
 }
 
 
@@ -349,7 +353,7 @@ void area_setup() {
 
   for (int16_t i = 0; i < 16; i++)
     for (int16_t j = 0; j < 16; j++)
-      tft.fillRect(i * L16, j * L16, L16, L16, GREYS[GRID[i][j] / 16]);
+      tft.fillRect(i * L16, j * L16, L16, L16, GREYS[GRID[j * 16 + i] / 16]);
 
   tft.drawRect(0, 0, L, L, TFT_GREEN);
 
@@ -477,7 +481,7 @@ void loop() {
 
                 if ((x_ >= 0) && (x_ < L) && (y_ >= 0) && (y_ < L)) {
                   tft.fillCircle(x, y, 1, TFT_RED);
-                  GRID[x_ / L16][y_ / L16] = GRID[x_ / L16][y_ / L16] + 1;
+                  GRID[y_ / L16 * 16 + (x_ / L16)] = GRID[y_ / L16  * 16 + (x_ / L16)] + 1;
                 }
               }
             }
@@ -497,10 +501,10 @@ void loop() {
       uint16_t V;
 
       tft.println(F("Conv layer 1 ..."));
-      V = noodle_conv(OUTPUT_BUFFER, 16, 1, 12, "i1-x.txt", "o1-x.txt", "w1-x-x.txt", "w2.txt");
+      V = noodle_conv(GRID, OUTPUT_BUFFER, 16, 1, 12, "i1-x.txt", "o1-x.txt", "w1-x-x.txt", "w2.txt");
 
       tft.println(F("Conv layer 2 ..."));
-      V = noodle_conv(OUTPUT_BUFFER, V, 12, 12, "o1-x.txt", "o2-x.txt", "w3-x-x.txt", "w4.txt");
+      V = noodle_conv(GRID, OUTPUT_BUFFER, V, 12, 12, "o1-x.txt", "o2-x.txt", "w3-x-x.txt", "w4.txt");
 
       V = noodle_flat(OUTPUT_BUFFER, "o2-x.txt", V, 12);
 
